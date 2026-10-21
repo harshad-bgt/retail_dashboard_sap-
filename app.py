@@ -80,7 +80,7 @@ st.markdown("""
 def load_and_clean_data(file_source):
     """
     Loads the retail sales CSV, cleans non-transaction metadata rows,
-    parses dates, and calculates derived columns.
+    parses dates, validates schema, and calculates derived columns.
     """
     if isinstance(file_source, (str, Path)):
         df_raw = pd.read_csv(file_source, encoding="latin1")
@@ -88,33 +88,107 @@ def load_and_clean_data(file_source):
         # Uploaded file buffer
         df_raw = pd.read_csv(file_source, encoding="latin1")
 
+    # Clean whitespace in column headers
+    df_raw.columns = df_raw.columns.str.strip()
+
+    # Normalize common column name variations
+    alias_map = {
+        "order_date": "Order Date",
+        "order date": "Order Date",
+        "orderdate": "Order Date",
+        "ship_date": "Ship Date",
+        "ship date": "Ship Date",
+        "shipdate": "Ship Date",
+        "customer_id": "Customer ID",
+        "customer id": "Customer ID",
+        "customerid": "Customer ID",
+        "order_id": "Order ID",
+        "order id": "Order ID",
+        "orderid": "Order ID",
+        "product_id": "Product ID",
+        "product id": "Product ID",
+        "productid": "Product ID",
+        "product_name": "Product Name",
+        "product name": "Product Name",
+        "sub_category": "Sub-Category",
+        "sub category": "Sub-Category",
+        "subcategory": "Sub-Category",
+        "postal_code": "Postal Code",
+        "postal code": "Postal Code",
+        "row_id": "Row ID",
+        "row id": "Row ID",
+        "rowid": "Row ID",
+    }
+    rename_dict = {}
+    for col in df_raw.columns:
+        norm = col.strip().lower()
+        if norm in alias_map and col != alias_map[norm]:
+            rename_dict[col] = alias_map[norm]
+        else:
+            cap = col.strip().title()
+            if cap in ["Sales", "Profit", "Quantity", "Discount", "Category", "Region", "Segment", "City", "State", "Country"]:
+                if col != cap:
+                    rename_dict[col] = cap
+    if rename_dict:
+        df_raw = df_raw.rename(columns=rename_dict)
+
+    # Validate essential numerical columns
+    for req_col in ["Sales", "Profit"]:
+        if req_col not in df_raw.columns:
+            raise ValueError(f"Uploaded CSV is missing required column '{req_col}'. Please ensure your file contains retail transaction data with Sales and Profit figures.")
+
+    raw_count = len(df_raw)
+
     # Documented cleaning step:
     # In the raw Sample Superstore CSV, 806 metadata rows at the bottom
     # (People and Returns reference sheets) contain null Order Dates.
-    raw_count = len(df_raw)
-    df = df_raw.dropna(subset=["Order Date", "Customer ID"]).copy()
+    if "Order Date" in df_raw.columns and "Customer ID" in df_raw.columns:
+        df = df_raw.dropna(subset=["Order Date", "Customer ID"]).copy()
+    elif "Order Date" in df_raw.columns:
+        df = df_raw.dropna(subset=["Order Date"]).copy()
+    else:
+        df = df_raw.dropna(subset=["Sales", "Profit"]).copy()
+
     cleaned_count = len(df)
 
     # Date parsing
-    df["Order Date"] = pd.to_datetime(df["Order Date"], errors="coerce")
-    df["Ship Date"] = pd.to_datetime(df["Ship Date"], errors="coerce")
+    if "Order Date" in df.columns:
+        df["Order Date"] = pd.to_datetime(df["Order Date"], errors="coerce")
+        df = df.dropna(subset=["Order Date"]).copy()
+        df["Year"] = df["Order Date"].dt.year
+        df["Month"] = df["Order Date"].dt.month
+        df["YearMonth"] = df["Order Date"].dt.to_period("M").astype(str)
+    else:
+        df["Year"] = 2018
+        df["Month"] = 1
+        df["YearMonth"] = "2018-01"
 
-    # Drop any remaining rows with unparseable dates
-    df = df.dropna(subset=["Order Date"]).copy()
+    if "Ship Date" in df.columns:
+        df["Ship Date"] = pd.to_datetime(df["Ship Date"], errors="coerce")
 
     # Data type formatting
     if "Postal Code" in df.columns:
         df["Postal Code"] = df["Postal Code"].fillna(0).astype(int)
 
-    # Derived analytical columns
-    df["Year"] = df["Order Date"].dt.year
-    df["Month"] = df["Order Date"].dt.month
-    df["YearMonth"] = df["Order Date"].dt.to_period("M").astype(str)
+    # Ensure numeric columns are properly cast
+    for num_col in ["Sales", "Profit", "Discount", "Quantity"]:
+        if num_col in df.columns:
+            df[num_col] = pd.to_numeric(df[num_col], errors="coerce").fillna(0.0)
+
+    # Ensure required categorical columns exist with defaults if missing
+    for cat_col, def_val in [("Category", "Standard"), ("Sub-Category", "General"), ("Region", "National"), ("Segment", "All")]:
+        if cat_col not in df.columns:
+            df[cat_col] = def_val
+        else:
+            df[cat_col] = df[cat_col].fillna(def_val).astype(str)
 
     # Calculate Profit Margin % for each row safely
     df["Profit Margin %"] = np.where(df["Sales"] > 0, (df["Profit"] / df["Sales"]) * 100.0, 0.0)
 
     # Group discounts into clearly defined analytical bands
+    if "Discount" not in df.columns:
+        df["Discount"] = 0.0
+
     def _assign_discount_band(disc):
         if disc == 0.0:
             return "0% (No Discount)"
@@ -186,7 +260,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Filter Options")
 
 # Reset filters button
-if st.sidebar.button("🔄 Reset All Filters", use_container_width=True):
+if st.sidebar.button("🔄 Reset All Filters", width="stretch"):
     for key in ["filter_years", "filter_regions", "filter_categories", "filter_segments"]:
         if key in st.session_state:
             del st.session_state[key]
@@ -268,18 +342,24 @@ st.markdown("---")
 # ------------------------------------------------------------------------------
 st.subheader("1. Dataset Overview")
 
-# Calculate dataset summary metrics
+# Calculate dataset summary metrics safely
 total_records = len(df)
 total_columns = df.shape[1]
-min_date = df["Order Date"].min().strftime("%b %d, %Y")
-max_date = df["Order Date"].max().strftime("%b %d, %Y")
-unique_orders_total = df["Order ID"].nunique()
-unique_products_total = df["Product ID"].nunique()
-unique_subcats_total = df["Sub-Category"].nunique()
+has_dates = "Order Date" in df.columns and not df["Order Date"].isna().all()
+min_date = df["Order Date"].min().strftime("%b %d, %Y") if has_dates else "N/A"
+max_date = df["Order Date"].max().strftime("%b %d, %Y") if has_dates else "N/A"
+date_range_str = f"{df['Year'].min()} - {df['Year'].max()}" if "Year" in df.columns else "N/A"
+unique_orders_total = df["Order ID"].nunique() if "Order ID" in df.columns else len(df)
+unique_products_total = df["Product ID"].nunique() if "Product ID" in df.columns else (
+    df["Product Name"].nunique() if "Product Name" in df.columns else (
+        df["Sub-Category"].nunique() if "Sub-Category" in df.columns else 0
+    )
+)
+unique_subcats_total = df["Sub-Category"].nunique() if "Sub-Category" in df.columns else 0
 
 col_ov1, col_ov2, col_ov3, col_ov4 = st.columns(4)
 col_ov1.metric("Total Records", f"{total_records:,}")
-col_ov2.metric("Date Range", f"{df['Year'].min()} - {df['Year'].max()}")
+col_ov2.metric("Date Range", date_range_str)
 col_ov3.metric("Unique Orders", f"{unique_orders_total:,}")
 col_ov4.metric("Catalog SKUs", f"{unique_products_total:,}")
 
@@ -292,13 +372,11 @@ st.markdown(f"""
 # Collapsible Preview Dataset
 with st.expander("🔍 Preview Dataset & Data Quality Summary", expanded=False):
     st.write(f"Displaying first 15 records of `{source_name}`:")
-    st.dataframe(
-        filtered_df[[
-            "Order ID", "Order Date", "Category", "Sub-Category",
-            "Sales", "Profit", "Discount", "Region", "Segment"
-        ]].head(15),
-        use_container_width=True
-    )
+    preview_cols = [c for c in [
+        "Order ID", "Order Date", "Category", "Sub-Category",
+        "Sales", "Profit", "Discount", "Region", "Segment"
+    ] if c in filtered_df.columns]
+    st.dataframe(filtered_df[preview_cols].head(15), width="stretch")
     st.caption(f"""
     **Data Cleaning Note:** The raw CSV contained {clean_stats['raw_count']:,} rows, of which 
     {clean_stats['removed_rows']} rows were reference metadata sheets ('People' & 'Returns') lacking transaction records. 
@@ -320,7 +398,7 @@ if len(filtered_df) == 0:
 # Aggregate calculations
 kpi_sales = filtered_df["Sales"].sum()
 kpi_profit = filtered_df["Profit"].sum()
-kpi_orders = filtered_df["Order ID"].nunique()
+kpi_orders = filtered_df["Order ID"].nunique() if "Order ID" in filtered_df.columns else len(filtered_df)
 # Clearly documented weighted margin formula: Total Profit / Total Sales * 100
 kpi_margin = (kpi_profit / kpi_sales * 100.0) if kpi_sales > 0 else 0.0
 
@@ -393,7 +471,8 @@ cat_agg = cat_agg.sort_values(by="Sales", ascending=False)
 fig2, (ax2_1, ax2_2) = plt.subplots(1, 2, figsize=(11, 4.2))
 
 # Subplot 1: Sales
-sns.barplot(data=cat_agg, x="Category", y="Sales", ax=ax2_1, palette=[PRIMARY_BLUE, "#aec7e8", AMBER_WARNING])
+cat_palette = [PRIMARY_BLUE, "#aec7e8", AMBER_WARNING][:len(cat_agg)]
+sns.barplot(data=cat_agg, x="Category", y="Sales", ax=ax2_1, hue="Category", legend=False, palette=cat_palette)
 ax2_1.set_title("Total Sales by Category ($)", fontsize=11, fontweight="bold")
 ax2_1.set_ylabel("Sales ($)", fontsize=9, fontweight="bold")
 ax2_1.set_xlabel("")
@@ -402,7 +481,8 @@ for p in ax2_1.patches:
                    ha='center', va='center', color='white', fontweight='bold', fontsize=9)
 
 # Subplot 2: Profit Margin
-sns.barplot(data=cat_agg, x="Category", y="Margin_%", ax=ax2_2, palette=[PROFIT_GREEN, PROFIT_GREEN, LOSS_RED if cat_agg['Margin_%'].min() < 5 else AMBER_WARNING])
+margin_palette = [PROFIT_GREEN if m >= 10 else (AMBER_WARNING if m >= 5 else LOSS_RED) for m in cat_agg['Margin_%']]
+sns.barplot(data=cat_agg, x="Category", y="Margin_%", ax=ax2_2, hue="Category", legend=False, palette=margin_palette)
 ax2_2.set_title("Net Profit Margin by Category (%)", fontsize=11, fontweight="bold")
 ax2_2.set_ylabel("Profit Margin (%)", fontsize=9, fontweight="bold")
 ax2_2.set_xlabel("")
@@ -469,7 +549,7 @@ disc_order = ["0% (No Discount)", "1-20% (Low-Moderate)", ">20% (High Discount)"
 disc_agg = filtered_df.groupby("Discount Band").agg(
     Sales=("Sales", "sum"),
     Profit=("Profit", "sum"),
-    Count=("Row ID", "count")
+    Count=("Sales", "count")
 ).reindex(disc_order).dropna().reset_index()
 
 disc_agg["Margin_%"] = np.where(disc_agg["Sales"] > 0, (disc_agg["Profit"] / disc_agg["Sales"]) * 100.0, 0.0)
@@ -477,9 +557,10 @@ disc_agg["Margin_%"] = np.where(disc_agg["Sales"] > 0, (disc_agg["Profit"] / dis
 fig4, (ax4_1, ax4_2) = plt.subplots(1, 2, figsize=(11, 4.2))
 
 # Subplot 1: Distribution boxplot
+present_bands = [d for d in disc_order if d in filtered_df["Discount Band"].unique()]
 sns.boxplot(data=filtered_df, x="Discount Band", y="Profit Margin %",
-            order=[d for d in disc_order if d in filtered_df["Discount Band"].unique()],
-            palette=[PROFIT_GREEN, AMBER_WARNING, LOSS_RED],
+            order=present_bands, hue="Discount Band", legend=False,
+            palette=[PROFIT_GREEN, AMBER_WARNING, LOSS_RED][:len(present_bands)],
             ax=ax4_1, width=0.45, showfliers=False)
 ax4_1.axhline(0, color="red", linestyle="--", linewidth=1.2, label="Breakeven (0% Margin)")
 ax4_1.set_title("Margin Distribution by Discount Band", fontsize=11, fontweight="bold")
@@ -518,10 +599,12 @@ st.markdown("---")
 # ------------------------------------------------------------------------------
 st.markdown("### Chart 5: Regional Sales and Profit Distribution")
 
+order_col = "Order ID" if "Order ID" in filtered_df.columns else "Sales"
+order_func = "nunique" if "Order ID" in filtered_df.columns else "count"
 reg_agg = filtered_df.groupby("Region").agg(
     Sales=("Sales", "sum"),
     Profit=("Profit", "sum"),
-    Orders=("Order ID", "nunique")
+    Orders=(order_col, order_func)
 ).reset_index().sort_values(by="Sales", ascending=False)
 reg_agg["Margin_%"] = np.where(reg_agg["Sales"] > 0, (reg_agg["Profit"] / reg_agg["Sales"]) * 100.0, 0.0)
 

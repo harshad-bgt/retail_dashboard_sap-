@@ -1,0 +1,28 @@
+{
+  "model_name": "Ridge Regression with Autoregressive Lags & Trend",
+  "historical_months": 24,
+  "evaluation_period": "Oct 2025 to Dec 2025",
+  "metrics": {
+    "naive_baseline": {
+      "mae": 8064.8,
+      "rmse": 9160.7,
+      "mape_pct": 14.14
+    },
+    "moving_average_3m": {
+      "mae": 8925.98,
+      "rmse": 10842.63,
+      "mape_pct": 15.33
+    },
+    "ml_model": {
+      "mae": 8754.37,
+      "rmse": 10423.84,
+      "mape_pct": 15.12
+    }
+  },
+  "forecast_horizon": [
+    "Jan 2026",
+    "Feb 2026",
+    "Mar 2026"
+  ],
+  "limitations": "Model trained on 24 months of historical transactions. While short-term trends and moving averages provide reasonable directional estimates, robust multi-year seasonal cycle decomposition requires 3+ years of data. All figures are predictive estimates, not guarantees."
+}

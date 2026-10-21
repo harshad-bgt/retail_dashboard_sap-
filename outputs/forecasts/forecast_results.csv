@@ -1,0 +1,4 @@
+period,month_name,type,forecast_revenue,lower_bound_80,upper_bound_80
+2026-01-01,Jan 2026,Forecast (Estimate),49178.45,41671.59,56685.31
+2026-02-01,Feb 2026,Forecast (Estimate),52979.03,42362.72,63595.34
+2026-03-01,Mar 2026,Forecast (Estimate),51776.76,38774.5,64779.03
